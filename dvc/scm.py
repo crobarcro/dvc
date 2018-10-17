@@ -244,6 +244,146 @@ class Git(Base):
         os.chmod(hook, 0o777)
 
 
+class Mercurial(Base):
+    HGIGNORE = '.hgignore'
+    HG_DIR = '.hg'
+
+    def __init__(self, root_dir=os.curdir, project=None):
+        super(Mercurial, self).__init__(root_dir, project=project)
+
+        import hglib as hg
+
+        try:
+            self.hgclient = hg.open(root_dir)
+        except hg.ServerError:
+            msg = '{} is not a mercurial repository'
+            raise SCMError(msg.format(root_dir))
+
+    @staticmethod
+    def is_repo(root_dir):
+        return os.path.isdir(Mercurial._get_hg_dir(root_dir))
+
+    @staticmethod
+    def is_submodule(root_dir):
+        return os.path.isfile(Mercurial._get_hg_dir(root_dir))
+
+    @staticmethod
+    def _get_hg_dir(root_dir):
+        return os.path.join(root_dir, Mercurial.HG_DIR)
+
+    @property
+    def dir(self):
+        return os.path.join (self.hgclient.root(), self.HG_DIR)
+
+    def ignore_file(self):
+        return self.HGIGNORE
+
+    def _get_hgignore(self, path):
+        assert os.path.isabs(path)
+        entry = os.path.basename(path)
+        hgignore = os.path.join(os.path.dirname(path), self.HGIGNORE)
+
+        if not hgignore.startswith(self.root_dir):
+            raise FileNotInRepoError(path)
+
+        return entry, hgignore
+
+    def ignore(self, path):
+        entry, hgignore = self._get_hgignore(path)
+
+        ignore_list = []
+        if os.path.exists(hgignore):
+            ignore_list = open(hgignore, 'r').readlines()
+            filtered = list(filter(lambda x: x.strip() == entry.strip(),
+                                   ignore_list))
+            if len(filtered) != 0:
+                return
+
+        msg = "Adding '{}' to '{}'.".format(os.path.relpath(path),
+                                            os.path.relpath(hgignore))
+        Logger.info(msg)
+
+        content = entry
+        if len(ignore_list) > 0:
+            content = '\n' + content
+
+        with open(hgignore, 'a') as fd:
+            fd.write(content)
+
+        if self.project is not None:
+            # NOTE: Can _files_to_git_add be changed to something more generic?
+            self.project._files_to_git_add.append(os.path.relpath(hgignore))
+
+    def ignore_remove(self, path):
+        entry, hgignore = self._get_hgignore(path)
+
+        if not os.path.exists(hgignore):
+            return
+
+        with open(hgignore, 'r') as fd:
+            lines = fd.readlines()
+
+        filtered = list(filter(lambda x: x.strip() != entry.strip(), lines))
+
+        with open(hgignore, 'w') as fd:
+            fd.writelines(filtered)
+
+        if self.project is not None:
+            self.project._files_to_git_add.append(os.path.relpath(hgignore))
+
+    def add(self, paths):
+        try:
+            self.hgclient.add(paths)
+        except AssertionError as exc:
+            msg = 'Failed to add \'{}\' to mercurial. You can add those files '
+            msg += 'manually using \'hg add\'. '
+            Logger.error(msg.format(str(paths)), exc)
+
+    def commit(self, msg):
+        self.hgclient.commit(message=msg)
+
+    def checkout(self, branch, create_new=False):
+        if create_new:
+            self.hgclient.branch(name=branch)
+        else:
+            self.hgclient.update(rev=branch)
+
+    def branch(self, branch):
+        self.hgclient.branch(name=branch)
+
+    def untracked_files(self):
+        files = [x[1] for x in self.hgclient.status(unknown=True)]
+        return [os.path.join(self.hgclient.root(), fname) for fname in files]
+
+    def is_tracked(self, path):
+        return len(self.repo.git.ls_files(path)) != 0
+
+    def active_branch(self):
+        return self.hgclient.branch()
+
+    def list_branches(self):
+        return [x[0] for x in self.hgclient.branches()]
+
+    def list_tags(self):
+        return [x[0] for x in self.hgclient.tags()]
+
+    def install(self):
+        # TODO: implement mercurial install method
+        # unfortunately I don't know the exact equivalent of the git post-checkout
+        # hook in mercurial, it's possibly 'update' which is run after the update
+        # command, but this is not quite the same as the git checkout command
+#        hook = os.path.join(self.root_dir,
+#                            self.HG_DIR,
+#                            'hooks',
+#                            'post-checkout')
+#        if os.path.isfile(hook):
+#            msg = 'Mercurial hook \'{}\' already exists.'
+#            raise SCMError(msg.format(os.path.relpath(hook)))
+#        with open(hook, 'w+') as fd:
+#            fd.write('#!/bin/sh\nexec dvc checkout\n')
+#        os.chmod(hook, 0o777)
+
+
 def SCM(root_dir, no_scm=False, project=None):
     if Git.is_repo(root_dir) or Git.is_submodule(root_dir):
         return Git(root_dir, project=project)
